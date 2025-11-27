@@ -31,9 +31,9 @@ kanjokamoku_file = st.sidebar.file_uploader("勘定科目リスト (txt)", type=
 
 # 指示プロンプト (デフォルト値を設定)
 default_prompt = """
-必ず以下のキーを持つJSONオブジェクトの配列（リスト）だけを出力してください。その他のものを返答する必要は一切ありません。Markdownのコードブロック（```）は不要です。
+必ず以下のキーを持つJSONオブジェクトの配列（リスト）だけを出力してください。その他のものを返答する必要は一切ありません。Markdownのコードブロック（``````）は不要です。
 
-１．勘定科目(kanjokamoku.txt)一覧がユーザーから渡されます。勘定科目がユーザーから渡されない場合は、勘定科目の欄はすべて「その他」とすること。
+ １．勘定科目(kanjokamoku.txt)一覧がユーザーから渡されます。勘定科目がユーザーから渡されない場合は、勘定科目の欄はすべて「その他」とすること。
 
 ２．レシート画像を次の#{json形式}でOCRしてスプレッドシートで出力してください。
 #{json形式}
@@ -149,4 +149,151 @@ default_prompt = """
 
 ]
 
-注意：document1.pdfの1ページ目は、8
+注意：document1.pdfの1ページ目は、8%の商品と10%の商品が含まれているレシート。document1.pdfの2ページ目は、郵便局で購入した印紙であり消費税は対象外のため（空白となる）。document1.pdfの3ページ目は、印刷が不鮮明で読み取れないレシート。
+
+必ずJSONオブジェクトの配列（リスト）だけを出力すること。
+"""
+direction_prompt = st.sidebar.text_area("AIへの指示", value=default_prompt, height=150)
+
+# # --- 関数定義 (既存ロジックを流用) ---
+def extract_json_data(file_bytes, file_name, prompt, api_key, kanjo_bytes):
+    endpoint = "https://api.perplexity.ai/chat/completions"
+    pdf_b64 = base64.b64encode(file_bytes).decode("utf-8")
+    
+    system_prompt = f"""{prompt}
+    処理対象ファイル名: {file_name}
+    【重要】出力はマークダウン記法を含まず、必ず純粋なJSON配列のテキストのみを返してください。"""
+
+    content = [
+        {"type": "text", "text": system_prompt},
+        {"type": "file_url", "file_url": {"url": pdf_b64}, "file_name": file_name},
+    ]
+
+    if kanjo_bytes:
+        kanjo_b64 = base64.b64encode(kanjo_bytes).decode("utf-8")
+        content.append({"type": "file_url", "file_url": {"url": kanjo_b64}, "file_name": "kanjokamoku.txt"})
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "sonar-pro",
+        "messages": [{"role": "user", "content": content}],
+        "stream": False
+    }
+
+    try:
+        response = requests.post(endpoint, headers=headers, data=json.dumps(payload))
+        response.raise_for_status()
+        content_text = response.json()["choices"][0]["message"]["content"]
+        
+        # --- 変更箇所: 正規表現によるJSON抽出ロジックの強化 ---
+        
+        # 1. re.DOTALLを使って改行を含む文字列全体から検索
+        # 2. r'\[.*\]' は「最初の [」から「最後の ]」までを貪欲にマッチさせます
+        # これにより、前後の挨拶文やMarkdown記法（```json 等）を無視してリスト部分だけを取り出せます
+        json_match = re.search(r'\[.*\]', content_text, re.DOTALL)
+        
+        if json_match:
+            clean_json = json_match.group(0)
+        else:
+            # マッチしない場合は、仕方ないので元のテキスト全体を試す
+            clean_json = content_text
+
+        # JSON変換
+        try:
+            data = json.loads(clean_json)
+        except json.JSONDecodeError as e:
+            # JSONエラー時にデバッグしやすいよう詳細を表示
+            st.error(f"JSON変換エラー: {file_name}\nAIからの返答を解析できませんでした。")
+            with st.expander("AIの生返答を確認"):
+                st.code(content_text)
+            return []
+
+        return data if isinstance(data, list) else [data]
+        # --- 変更箇所ここまで ---
+
+    except Exception as e:
+        st.error(f"{file_name} の処理中にエラー: {e}")
+        return []
+
+
+# def extract_json_data(file_bytes, file_name, prompt, api_key, kanjo_bytes):
+#     endpoint = "https://api.perplexity.ai/chat/completions"
+#     pdf_b64 = base64.b64encode(file_bytes).decode("utf-8")
+    
+#     system_prompt = f"""{prompt}
+#     処理対象ファイル名: {file_name}
+#     【重要】出力はマークダウン記法を含まず、必ず純粋なJSON配列のテキストのみを返してください。"""
+
+#     content = [
+#         {"type": "text", "text": system_prompt},
+#         {"type": "file_url", "file_url": {"url": pdf_b64}, "file_name": file_name},
+#     ]
+
+#     if kanjo_bytes:
+#         kanjo_b64 = base64.b64encode(kanjo_bytes).decode("utf-8")
+#         content.append({"type": "file_url", "file_url": {"url": kanjo_b64}, "file_name": "kanjokamoku.txt"})
+
+#     headers = {
+#         "Authorization": f"Bearer {api_key}",
+#         "Content-Type": "application/json",
+#     }
+#     payload = {
+#         "model": "sonar-pro",
+#         "messages": [{"role": "user", "content": content}],
+#         "stream": False
+#     }
+
+#     try:
+#         response = requests.post(endpoint, headers=headers, data=json.dumps(payload))
+#         response.raise_for_status()
+#         content_text = response.json()["choices"][0]["message"]["content"]
+        
+#         # JSON抽出ロジック
+#         json_match = re.search(r"""``````""", content_text, re.DOTALL)
+#         clean_json = json_match.group(1) if json_match else content_text.strip().strip('`')
+        
+#         data = json.loads(clean_json)
+#         return data if isinstance(data, list) else [data]
+#     except Exception as e:
+#         st.error(f"{file_name} の処理中にエラー: {e}")
+#         return []
+
+# --- 実行ボタン ---
+if st.button("読み取り開始"):
+    if not uploaded_files:
+        st.error("ファイルをアップロードしてください。")
+    elif len(uploaded_files) > 5:
+        st.error("ファイル数は5つ以内にしてください。")
+    else:
+        # 勘定科目の読み込み
+        kanjo_bytes = kanjokamoku_file.read() if kanjokamoku_file else None
+        
+        all_data = []
+        progress_bar = st.progress(0)
+
+        for i, uploaded_file in enumerate(uploaded_files):
+            st.info(f"処理中: {uploaded_file.name} ...")
+            # アップロードされたファイルのバイトデータを直接渡す
+            file_bytes = uploaded_file.read()
+            data = extract_json_data(file_bytes, uploaded_file.name, direction_prompt, api_key, kanjo_bytes)
+            if data:
+                all_data.extend(data)
+            progress_bar.progress((i + 1) / len(uploaded_files))
+
+        if all_data:
+            st.success("完了しました！")
+            
+            # 結果の表示
+            st.json(all_data)
+            
+            # JSONダウンロードボタン
+            json_str = json.dumps(all_data, ensure_ascii=False, indent=2)
+            st.download_button(
+                label="JSONファイルをダウンロード",
+                data=json_str,
+                file_name=f"receipt_data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
