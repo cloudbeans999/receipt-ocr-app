@@ -155,14 +155,14 @@ default_prompt = """
 """
 direction_prompt = st.sidebar.text_area("AIへの指示", value=default_prompt, height=150)
 
-# --- 関数定義 (既存ロジックを流用) ---
+# # --- 関数定義 (既存ロジックを流用) ---
 def extract_json_data(file_bytes, file_name, prompt, api_key, kanjo_bytes):
-    endpoint = "https://api.perplexity.ai/chat/completions"
+    endpoint = "[https://api.perplexity.ai/chat/completions](https://api.perplexity.ai/chat/completions)"
     pdf_b64 = base64.b64encode(file_bytes).decode("utf-8")
     
     system_prompt = f"""{prompt}
     処理対象ファイル名: {file_name}
-    【重要】出力はマークダウン記法を含まず、純粋なJSON配列のテキストのみを返してください。"""
+    【重要】出力はマークダウン記法を含まず、必ず純粋なJSON配列のテキストのみを返してください。"""
 
     content = [
         {"type": "text", "text": system_prompt},
@@ -188,15 +188,78 @@ def extract_json_data(file_bytes, file_name, prompt, api_key, kanjo_bytes):
         response.raise_for_status()
         content_text = response.json()["choices"][0]["message"]["content"]
         
-        # JSON抽出ロジック
-        json_match = re.search(r"""``````""", content_text, re.DOTALL)
-        clean_json = json_match.group(1) if json_match else content_text.strip().strip('`')
+        # --- 変更箇所: 正規表現によるJSON抽出ロジックの強化 ---
         
-        data = json.loads(clean_json)
+        # 1. re.DOTALLを使って改行を含む文字列全体から検索
+        # 2. r'\[.*\]' は「最初の [」から「最後の ]」までを貪欲にマッチさせます
+        # これにより、前後の挨拶文やMarkdown記法（```json 等）を無視してリスト部分だけを取り出せます
+        json_match = re.search(r'\[.*\]', content_text, re.DOTALL)
+        
+        if json_match:
+            clean_json = json_match.group(0)
+        else:
+            # マッチしない場合は、仕方ないので元のテキスト全体を試す
+            clean_json = content_text
+
+        # JSON変換
+        try:
+            data = json.loads(clean_json)
+        except json.JSONDecodeError as e:
+            # JSONエラー時にデバッグしやすいよう詳細を表示
+            st.error(f"JSON変換エラー: {file_name}\nAIからの返答を解析できませんでした。")
+            with st.expander("AIの生返答を確認"):
+                st.code(content_text)
+            return []
+
         return data if isinstance(data, list) else [data]
+        # --- 変更箇所ここまで ---
+
     except Exception as e:
         st.error(f"{file_name} の処理中にエラー: {e}")
         return []
+
+
+# def extract_json_data(file_bytes, file_name, prompt, api_key, kanjo_bytes):
+#     endpoint = "https://api.perplexity.ai/chat/completions"
+#     pdf_b64 = base64.b64encode(file_bytes).decode("utf-8")
+    
+#     system_prompt = f"""{prompt}
+#     処理対象ファイル名: {file_name}
+#     【重要】出力はマークダウン記法を含まず、必ず純粋なJSON配列のテキストのみを返してください。"""
+
+#     content = [
+#         {"type": "text", "text": system_prompt},
+#         {"type": "file_url", "file_url": {"url": pdf_b64}, "file_name": file_name},
+#     ]
+
+#     if kanjo_bytes:
+#         kanjo_b64 = base64.b64encode(kanjo_bytes).decode("utf-8")
+#         content.append({"type": "file_url", "file_url": {"url": kanjo_b64}, "file_name": "kanjokamoku.txt"})
+
+#     headers = {
+#         "Authorization": f"Bearer {api_key}",
+#         "Content-Type": "application/json",
+#     }
+#     payload = {
+#         "model": "sonar-pro",
+#         "messages": [{"role": "user", "content": content}],
+#         "stream": False
+#     }
+
+#     try:
+#         response = requests.post(endpoint, headers=headers, data=json.dumps(payload))
+#         response.raise_for_status()
+#         content_text = response.json()["choices"][0]["message"]["content"]
+        
+#         # JSON抽出ロジック
+#         json_match = re.search(r"""``````""", content_text, re.DOTALL)
+#         clean_json = json_match.group(1) if json_match else content_text.strip().strip('`')
+        
+#         data = json.loads(clean_json)
+#         return data if isinstance(data, list) else [data]
+#     except Exception as e:
+#         st.error(f"{file_name} の処理中にエラー: {e}")
+#         return []
 
 # --- 実行ボタン ---
 if st.button("読み取り開始"):
